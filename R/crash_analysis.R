@@ -32,7 +32,12 @@ na_to_0 <- function(x) {
 crash_csv <- crash_csv %>%
   mutate(
     across(all_of(c(vehicle_vars, outcome_vars)), na_to_0),
-    tlaId = stringr::str_pad(tlaId, width = 3, pad = "0")
+    tlaId = stringr::str_pad(tlaId, width = 3, pad = "0"),
+    severity = case_when(
+      fatalCount > 0 ~ "High",
+      seriousInjuryCount > 0 ~ "Medium",
+      TRUE ~ "Low"
+    )
   ) %>% 
   mutate(
     totalVehicle = bicycle + bus + carStationWagon + moped + motorcycle + otherVehicleType +
@@ -117,21 +122,26 @@ crashes_per_capita <-
 fatalities_per_cap_2022 <-
   crashes_per_capita %>% 
   filter(crashYear == 2022, outcome == "Fatalities") %>% 
-  arrange(outcome_per_cap)
+  arrange(desc(outcome_per_cap))
 
 serious_injuries_per_cap_2022 <-
   crashes_per_capita %>% 
   filter(crashYear == 2022, outcome == "Serious injuries") %>% 
-  arrange(outcome_per_cap)
+  arrange(desc(outcome_per_cap))
 
 serious_or_fatal_per_cap <-
   crashes_per_capita %>% 
   filter(outcome %in% c("Fatalities", "Serious injuries")) %>% 
   group_by(tlaId, tlaName) %>% 
   summarise(
-    average_per_cap = weighted.mean(x = outcome_per_cap, w = est_res_pop)
+    average_per_cap = weighted.mean(x = outcome_per_cap, w = est_res_pop),
+    average_per_dap = weighted.mean(x = outcome_per_dap, w = est_res_pop)
   ) %>%
-  ungroup()
+  ungroup() %>% 
+  arrange(desc(average_per_cap))
+
+head(serious_or_fatal_per_cap)
+tail(serious_or_fatal_per_cap)
 
 ggplot(crash_csv) + 
   geom_histogram(aes(x=crashYear), binwidth = 1) +
@@ -144,26 +154,50 @@ ggplot(crashes_per_capita) +
 
 # Interactive maps ----------------------------------------------
 
-
-
-map_data <- crash_csv %>%
+map_data_2022 <- crash_csv %>%
+  filter(crashYear == 2022) %>% 
   mutate(
     Northing = as.numeric(Y),
     Easting = as.numeric(X)
   )
 
-map_data <- st_as_sf(map_data, coords = c("Easting", "Northing"), crs = 2193)
-map_data <- st_transform(map_data, 4326)
+map_data_2022 <- st_as_sf(map_data_2022, coords = c("Easting", "Northing"), crs = 2193)
+map_data_2022 <- st_transform(map_data_2022, 4326)
 
-map_data$lng = st_coordinates(map_data$geometry)[,1]
-map_data$lat = st_coordinates(map_data$geometry)[,2]
-map_data$geometry<-NULL
+map_chathams <- map_data_2022[map_data_2022$tlaName == "Chatham Islands Territory",]
+map_main <- map_data_2022[map_data_2022$tlaName != "Chatham Islands Territory",]
+map_chathams <- st_shift_longitude(map_chathams) #moves Chathams from the Western side of the map to the East
+map_data_2022 <- bind_rows(map_main, map_chathams)
+
+map_data_2022$lng = st_coordinates(map_data_2022$geometry)[,1]
+map_data_2022$lat = st_coordinates(map_data_2022$geometry)[,2]
+
+map_data_2022 <-
+  map_data_2022 %>% 
+  select(lat, lng, severity) %>% 
+  mutate(
+    colour = case_when(
+      severity == "High" ~ "red",
+      severity == "Medium" ~ "orange",
+      TRUE ~ "green"
+    )
+  )
 
 leaflet(
-  data = map_data[1:100,]
+  data = map_data_2022
 ) %>% 
   addTiles(urlTemplate = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png") %>%
-  addCircles(
+  addCircleMarkers(
+    color = "black",
+    weight = 2,
+    fillColor = ~colour,
+    fillOpacity = 0.7,
+    radius = 5,
+    label = ~paste("Severity: ", severity),
     lat = ~lat,
-    lng = ~lng
+    lng = ~lng,
+    clusterOptions = markerClusterOptions(
+      maxClusterRadius = 75,
+      disableClusteringAtZoom = 13
+    )
   )
