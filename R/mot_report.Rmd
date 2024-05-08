@@ -1,0 +1,287 @@
+---
+title: "Analysis of NZTA crash data"
+author: "Jayden Mudge"
+date: "07/05/2024"
+output: slidy_presentation
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(randomForest)
+library(glmnet)
+library(VIM)
+library(fastDummies)
+opts_chunk$set(echo = FALSE)
+opts_knit$set(root.dir = paste0(getwd(), "/.."))
+```
+
+## Overview
+
+What I don't aim to do:
+
+- Fully identify and resolve the root causes of all crashes in Aotearoa New Zealand
+
+## Overview
+
+What I don't aim to do:
+
+- Fully identify and resolve the root causes of all crashes in Aotearoa New Zealand
+
+Rather, I aim to:
+
+- Showcase my analytical skills and processes
+- Outline some preliminary observations
+- Discuss other ideas to explore
+
+## Initial explorations
+
+Let's start off by downloading the crash dataset and having a peak at what data is available in it
+
+
+```{r load_crash_data, echo = FALSE}
+crash_csv <- data.table::fread(
+  "Data/Crash_Analysis_System_(CAS)_data.csv",
+  keepLeadingZeros = TRUE
+)
+
+
+summary(crash_csv[,1:8])
+```
+
+
+## What do we find?
+
+There's a lot of fascinating data in here!
+
+- X,Y co-ordinates, street names, and other geographic info
+- Both calendar and financial year, and holidays if applicable
+- Vehicle counts involved in crash
+- Objects crashed into, where applicable
+- Weather and light conditions
+- Outcomes on individuals: injuries and severity
+
+## An initial visualisation
+
+```{r reg_vis, echo = FALSE, out.width = '100%', fig.height = 5}
+vehicle_vars <- c(
+  "bicycle", "bus", "carStationWagon", "moped", "motorcycle", "otherVehicleType", "schoolBus",
+  "suv", "taxi", "train", "truck", "unknownVehicleType", "vanOrUtility", "vehicle"
+)
+
+obstacle_vars <- c(
+  "bridge", "cliffBank", "debris", "ditch", "fence", "guardRail", "houseOrBuilding",
+  "kerb", "NumberOfLanes", "objectThrownOrDropped", "otherObject", "overBank",
+  "parkedVehicle", "pedestrian", "phoneBoxEtc", "postOrPole", "roadworks", "slipOrFlood",
+  "strayAnimal", "trafficIsland", "trafficSign", "tree", "waterRiver"
+)
+
+outcome_vars <- c("fatalCount", "seriousInjuryCount", "minorInjuryCount")
+
+na_to_0 <- function(x) {
+  coalesce(x, 0)
+}
+
+#impute missing speed limits
+crash_csv <- VIM::matchImpute(
+  crash_csv,
+  variable = "speedLimit",
+  match_var = c("crashLocation1", "crashLocation2", "NumberOfLanes", "crashSHDescription")
+  )
+
+crash_csv <- crash_csv %>%
+  mutate(
+    across(all_of(c(vehicle_vars, obstacle_vars, outcome_vars)), na_to_0),
+    advisorySpeed = coalesce(advisorySpeed, speedLimit),
+    tempChangeInSpeedLimit = ifelse(is.na(temporarySpeedLimit), 0, speedLimit - temporarySpeedLimit),
+    tlaId = stringr::str_pad(tlaId, width = 3, pad = "0"),
+    involved_motorcycle = (motorcycle > 0),
+    severeCrash = (crashSeverity %in% c("Serious Crash", "Fatal Crash"))
+  )
+
+region_order <- crash_csv %>% 
+  arrange(tlaId) %>% 
+  distinct(region) %>% 
+  pull()
+
+region_order <- c(
+  "Northland Region", "Auckland Region", "Waikato Region", "Bay of Plenty Region", "Gisborne Region",
+  "Hawke's Bay Region", "Taranaki Region", "Manawatū-Whanganui Region", "Wellington Region", "Tasman Region",          
+  "Nelson Region", "Marlborough Region", "West Coast Region", "Canterbury Region", "Otago Region", "Southland Region", ""
+  )
+
+ggplot(crash_csv %>% filter(region != "")) + 
+  geom_histogram(aes(x=crashYear, fill = crashSeverity), binwidth = 1) +
+  facet_wrap(~region, axes = "all_x") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Observations
+
+There are some limitations with this data source though
+
+- No info on traffic volumes to provide context to crash numbers. Should one avoid Auckland because it's where the majority of crashes happen?
+- No date-time information more precise than year
+- Which parties were responsible for the crash, and which parties received the injuries
+
+We also seem to have incomplete data for 2023, perhaps we should drop this as it skews our analysis.
+
+Also notice a dip in crashes between 2010 and 2015 in all regions, what could be driving that? A [report from NZTA](https://www.transport.govt.nz/assets/Uploads/Presentation/Overview-of-Road-Safety-in-NZ-Data-packs-for-reference-groups.pdf) noted the increase in fatalities could be driven by an increase in motorcycle registrations.
+
+## Crashes involving motorbikes
+
+```{r severe_pct_reg, echo = FALSE, out.width = '100%'}
+ggplot(crash_csv %>% filter(crashYear < 2023)) + 
+  geom_bar(aes(x=crashYear, fill = involved_motorcycle)) +
+  facet_wrap(~crashSeverity, scales = "free_y")
+```
+
+However, this doesn't seem to be a major contributor to overall traffic collisions. The main drivers in fact appear to be minor and non-injury crashes. Perhaps it's just an increase in rates of these minor incidents being reported?
+
+## Applying context
+
+Using the high quality population estimates from Stats NZ, we can calculate per 1,000 usual residents for crashes at each severity level. I also include a per 1,000 people of driving age measure, as these are the people most likely to be behind the wheel of a car.
+
+```{r cars, echo = FALSE}
+erp_by_ta <- data.table::fread(
+  "Data/erp_by_ta.csv", skip = 1
+)
+
+erp_by_ta <- erp_by_ta %>% 
+  fill(
+    c('Area', 'Age', 'Sex'), .direction = "down"
+  ) %>% 
+  filter(
+    !is.na(`Year at 30 June`)
+  ) %>% 
+  mutate(
+    tlaId = stringr::str_split_i(Area, pattern = ": ", i = 1),
+    pop_group = ifelse(
+      Age == "Total people, age", "est_res_pop", "driving_age_pop"
+    )
+  ) %>% 
+  group_by(tlaId, Year = `Year at 30 June`, pop_group) %>% 
+  summarise(
+    count = sum(Figure)
+  ) %>% 
+  ungroup() %>% 
+  pivot_wider(
+    id_cols = c(tlaId, Year),
+    names_from = pop_group,
+    values_from = count
+  )
+
+
+# Aggregate crash data and combine with population ------------------------
+
+crash_outcomes_by_year <- 
+  crash_csv %>% 
+  group_by(tlaId, tlaName, crashYear) %>% 
+  summarise(
+    across(all_of(outcome_vars), sum)
+  ) %>%  
+  pivot_longer(
+    cols = all_of(outcome_vars),
+    names_to = "outcome",
+    values_to = "n"
+  ) %>% 
+  mutate(
+    outcome = case_when(
+      outcome == "minorInjuryCount" ~ "Minor injuries",
+      outcome == "seriousInjuryCount" ~ "Serious injuries",
+      outcome == "fatalCount" ~ "Fatalities"
+    ),
+    outcome = factor(outcome, levels = c("Minor injuries", "Serious injuries", "Fatalities"))
+  )
+
+crashes_per_capita <- 
+  crash_outcomes_by_year %>% 
+  inner_join(
+    erp_by_ta,
+    join_by(tlaId, crashYear == Year),
+    relationship = "many-to-many"
+  ) %>% 
+  mutate(
+    outcome_per_cap = n / est_res_pop,
+    outcome_per_dap = n / driving_age_pop
+  ) %>% 
+  filter(crashYear != 2023) #2023 data is not complete so skews picture
+
+
+# Graphs and tables -------------------------------------------------------
+
+fatalities_per_cap_2022 <-
+  crashes_per_capita %>% 
+  filter(crashYear == 2022, outcome == "Fatalities") %>% 
+  arrange(desc(outcome_per_cap))
+
+serious_injuries_per_cap_2022 <-
+  crashes_per_capita %>% 
+  filter(crashYear == 2022, outcome == "Serious injuries") %>% 
+  arrange(desc(outcome_per_cap))
+
+serious_or_fatal_per_cap <-
+  crashes_per_capita %>% 
+  filter(outcome %in% c("Fatalities", "Serious injuries")) %>% 
+  group_by(tlaId, tlaName) %>% 
+  summarise(
+    average_per_1000cap = 1000*weighted.mean(x = outcome_per_cap, w = est_res_pop),
+    average_per_1000dap = 1000*weighted.mean(x = outcome_per_dap, w = est_res_pop)
+  ) %>%
+  ungroup() %>% 
+  arrange(desc(average_per_1000cap))
+
+head(serious_or_fatal_per_cap) %>% kable()
+tail(serious_or_fatal_per_cap) %>% kable()
+```
+
+## Statistical modelling for significant variables
+
+```{r ridge_lasso, echo = FALSE}
+mod_vars <- c(
+  "bicycle", "bridge", "bus", "carStationWagon", "cliffBank", "crashSHDescription",
+  "debris", "directionRoleDescription", "ditch", "fence", "flatHill", "guardRail",
+  "holiday", "houseOrBuilding", "kerb", "light", "moped", "motorcycle",
+  "NumberOfLanes", "objectThrownOrDropped", "otherObject", "otherVehicleType", "overBank",
+  "parkedVehicle", "pedestrian", "phoneBoxEtc", "postOrPole", "region", "roadCharacter",
+  "roadLane", "roadSurface", "roadworks", "schoolBus", "slipOrFlood", "speedLimit",
+  "strayAnimal", "streetLight", "suv", "taxi", "tempChangeInSpeedLimit", "trafficControl",
+  "trafficIsland", "trafficSign", "train", "tree", "truck", "urban", "vanOrUtility",
+  "waterRiver", "weatherA", "weatherB"
+)
+
+character_vars <- crash_csv %>% 
+  select(all_of(mod_vars)) %>% 
+  select(where(is.character)) %>% 
+  names()
+
+mod_data <- crash_csv %>%
+  select(all_of(mod_vars)) %>%
+  fastDummies::dummy_cols(character_vars, remove_selected_columns = T) %>% 
+  as.matrix()
+
+crash_mod <- glmnet::cv.glmnet(
+  x = mod_data,
+  y = crash_csv$severeCrash,
+  family = "binomial",
+  alpha = 1,
+  intercept = FALSE
+)
+
+plot(crash_mod)
+
+coefs <- coef(crash_mod, s = "lambda.1se")
+
+coefs <- data.frame(
+  var = coefs@Dimnames[[1]][coefs@i + 1],
+  coef = coefs@x
+) %>% 
+  arrange(desc(coef))
+```
+
+```{r key_vars, echo = FALSE}
+head(coefs, 10) %>% kable()
+tail(coefs, 10) %>% kable()
+```

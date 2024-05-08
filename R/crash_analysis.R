@@ -1,6 +1,7 @@
 library(sf)
 library(sp)
 library(dplyr)
+library(tidyr)
 library(ggplot2)
 library(leaflet)
 
@@ -32,12 +33,7 @@ na_to_0 <- function(x) {
 crash_csv <- crash_csv %>%
   mutate(
     across(all_of(c(vehicle_vars, outcome_vars)), na_to_0),
-    tlaId = stringr::str_pad(tlaId, width = 3, pad = "0"),
-    severity = case_when(
-      fatalCount > 0 ~ "High",
-      seriousInjuryCount > 0 ~ "Medium",
-      TRUE ~ "Low"
-    )
+    tlaId = stringr::str_pad(tlaId, width = 3, pad = "0")
   ) %>% 
   mutate(
     totalVehicle = bicycle + bus + carStationWagon + moped + motorcycle + otherVehicleType +
@@ -174,12 +170,13 @@ map_data_2022$lat = st_coordinates(map_data_2022$geometry)[,2]
 
 map_data_2022 <-
   map_data_2022 %>% 
-  select(lat, lng, severity) %>% 
+  select(lat, lng, crashSeverity) %>% 
   mutate(
     colour = case_when(
-      severity == "High" ~ "red",
-      severity == "Medium" ~ "orange",
-      TRUE ~ "green"
+      crashSeverity == "Fatal Crash" ~ "red",
+      crashSeverity == "Serious Crash" ~ "orange",
+      crashSeverity == "Minor Crash" ~ "yellow",
+      crashSeverity == "Non-Injury Crash" ~ "green"
     )
   )
 
@@ -193,7 +190,7 @@ leaflet(
     fillColor = ~colour,
     fillOpacity = 0.7,
     radius = 5,
-    label = ~paste("Severity: ", severity),
+    label = ~paste("crashSeverity: ", crashSeverity),
     lat = ~lat,
     lng = ~lng,
     clusterOptions = markerClusterOptions(
