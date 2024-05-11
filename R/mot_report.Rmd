@@ -33,15 +33,15 @@ What I don't aim to do:
 Rather, I aim to:
 
 - Showcase my analytical skills and processes
-- Outline some preliminary observations
-- Discuss other ideas to explore
+- Outline some preliminary observations about crash rates and crash severity
+- Identify possible future topics for analysis
 
 ## Initial explorations
 
 Let's start off by downloading the crash dataset and having a peak at what data is available in it
 
 
-```{r load_crash_data, echo = FALSE}
+```{r load_crash_data, echo = FALSE, fig.align='center'}
 crash_csv <- data.table::fread(
   "Data/Crash_Analysis_System_(CAS)_data.csv",
   keepLeadingZeros = TRUE
@@ -65,20 +65,26 @@ There's a lot of fascinating data in here!
 
 ## An initial visualisation
 
-```{r reg_vis, echo = FALSE, out.width = '100%', fig.height = 5}
+```{r reg_vis, echo = FALSE, fig.width = 12, fig.height = 7, fig.align='center'}
 vehicle_vars <- c(
   "bicycle", "bus", "carStationWagon", "moped", "motorcycle", "otherVehicleType", "schoolBus",
   "suv", "taxi", "train", "truck", "unknownVehicleType", "vanOrUtility", "vehicle"
-)
+  )
 
 obstacle_vars <- c(
   "bridge", "cliffBank", "debris", "ditch", "fence", "guardRail", "houseOrBuilding",
   "kerb", "NumberOfLanes", "objectThrownOrDropped", "otherObject", "overBank",
   "parkedVehicle", "pedestrian", "phoneBoxEtc", "postOrPole", "roadworks", "slipOrFlood",
   "strayAnimal", "trafficIsland", "trafficSign", "tree", "waterRiver"
-)
+  )
 
 outcome_vars <- c("fatalCount", "seriousInjuryCount", "minorInjuryCount")
+
+region_order <- c(
+  "Northland Region", "Auckland Region", "Waikato Region", "Bay of Plenty Region", "Gisborne Region",
+  "Hawke's Bay Region", "Taranaki Region", "Manawatū-Whanganui Region", "Wellington Region", "Tasman Region",          
+  "Nelson Region", "Marlborough Region", "West Coast Region", "Canterbury Region", "Otago Region", "Southland Region", ""
+  )
 
 na_to_0 <- function(x) {
   coalesce(x, 0)
@@ -98,29 +104,21 @@ crash_csv <- crash_csv %>%
     tempChangeInSpeedLimit = ifelse(is.na(temporarySpeedLimit), 0, speedLimit - temporarySpeedLimit),
     tlaId = stringr::str_pad(tlaId, width = 3, pad = "0"),
     involved_motorcycle = (motorcycle > 0),
-    severeCrash = (crashSeverity %in% c("Serious Crash", "Fatal Crash"))
-  )
-
-region_order <- crash_csv %>% 
-  arrange(tlaId) %>% 
-  distinct(region) %>% 
-  pull()
-
-region_order <- c(
-  "Northland Region", "Auckland Region", "Waikato Region", "Bay of Plenty Region", "Gisborne Region",
-  "Hawke's Bay Region", "Taranaki Region", "Manawatū-Whanganui Region", "Wellington Region", "Tasman Region",          
-  "Nelson Region", "Marlborough Region", "West Coast Region", "Canterbury Region", "Otago Region", "Southland Region", ""
+    severeCrash = (crashSeverity %in% c("Serious Crash", "Fatal Crash")),
+    region = factor(region, levels = region_order),
+    crashSeverity = factor(crashSeverity, levels = c("Non-Injury Crash", "Minor Crash", "Serious Crash", "Fatal Crash"))
   )
 
 ggplot(crash_csv %>% filter(region != "")) + 
   geom_histogram(aes(x=crashYear, fill = crashSeverity), binwidth = 1) +
   facet_wrap(~region, axes = "all_x") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Crash severity by regional council")
 ```
 
 ## Observations
 
-There are some limitations with this data source though
+There are some limitations with this data source.
 
 - No info on traffic volumes to provide context to crash numbers. Should one avoid Auckland because it's where the majority of crashes happen?
 - No date-time information more precise than year
@@ -128,23 +126,44 @@ There are some limitations with this data source though
 
 We also seem to have incomplete data for 2023, perhaps we should drop this as it skews our analysis.
 
-Also notice a dip in crashes between 2010 and 2015 in all regions, what could be driving that? A [report from NZTA](https://www.transport.govt.nz/assets/Uploads/Presentation/Overview-of-Road-Safety-in-NZ-Data-packs-for-reference-groups.pdf) noted the increase in fatalities could be driven by an increase in motorcycle registrations.
+## Updated visualisation
+
+```{r reg_vis_2, echo = FALSE, fig.width = 12, fig.height = 7, fig.align='center'}
+ggplot(crash_csv %>% filter(region != "", crashYear < 2023)) + 
+  geom_histogram(aes(x=crashYear, fill = crashSeverity), binwidth = 1) +
+  facet_wrap(~region, axes = "all_x", scales = "free_y") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Relative crash severity by regional council")
+```
+
+This better contrasts the severity of crashes by region. Here we can see crashes are less likely to be severe in Auckland and Wellington. However, it doesn't resolve the crash likelihood issue. Let us say, in a region, 5% of crashes are fatal. How do we reduce that figure? We can decrease the number of fatal crashes, or we can increase the number of non-fatal crashes. Regions with a low fatality rate could actually just have a high rate of non-fatal crash obscuring the number of fatal crashes.
+
+On another note, we notice a dip in crashes between 2010 and 2015 in all regions, what could be driving that?
 
 ## Crashes involving motorbikes
 
-```{r severe_pct_reg, echo = FALSE, out.width = '100%'}
+A [report from NZTA](https://www.transport.govt.nz/assets/Uploads/Presentation/Overview-of-Road-Safety-in-NZ-Data-packs-for-reference-groups.pdf) noted the increase in fatalities could be driven by an increase in motorcycle registrations.
+
+```{r severe_pct_reg, echo = FALSE, fig.height=4, fig.width=12, fig.align='center'}
 ggplot(crash_csv %>% filter(crashYear < 2023)) + 
   geom_bar(aes(x=crashYear, fill = involved_motorcycle)) +
-  facet_wrap(~crashSeverity, scales = "free_y")
+  facet_wrap(~crashSeverity, nrow = 1, scales = "free_y") +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  ggtitle(
+    "Crashes by motorcycle involvement and severity"
+  )
 ```
 
-However, this doesn't seem to be a major contributor to overall traffic collisions. The main drivers in fact appear to be minor and non-injury crashes. Perhaps it's just an increase in rates of these minor incidents being reported?
+However, this doesn't seem to be a major contributor to overall traffic collisions. We see dips from 2010-2015 for both crashes involving and not involving motorcycles, and those not involving motorcycles are clearly a larger contributor to overall crashes.
 
 ## Applying context
 
-Using the high quality population estimates from Stats NZ, we can calculate per 1,000 usual residents for crashes at each severity level. I also include a per 1,000 people of driving age measure, as these are the people most likely to be behind the wheel of a car.
+Using the high quality population estimates from Stats NZ, we can calculate per 1,000 usual residents for crashes at each severity level.
 
-```{r cars, echo = FALSE}
+```{r cars, echo = FALSE, message = FALSE, fig.align='center', fig.height=12, cache = TRUE}
 erp_by_ta <- data.table::fread(
   "Data/erp_by_ta.csv", skip = 1
 )
@@ -233,13 +252,40 @@ serious_or_fatal_per_cap <-
   ungroup() %>% 
   arrange(desc(average_per_1000cap))
 
-head(serious_or_fatal_per_cap) %>% kable()
-tail(serious_or_fatal_per_cap) %>% kable()
+tla_name_order <-
+  crash_csv %>% 
+  distinct(tlaId, tlaName) %>% 
+  arrange(tlaId) %>% 
+  pull(tlaName)
+
+tla_name_order <- tla_name_order[which(tla_name_order != "Auckland")]
+tla_name_order <- c(tla_name_order[1:2], "Auckland", tla_name_order[3:length(tla_name_order)])
+
+serious_or_fatal_per_cap$tlaName <- factor(serious_or_fatal_per_cap$tlaName, levels = tla_name_order)
+
+ggplot(serious_or_fatal_per_cap %>% filter(!is.na(tlaId))) +
+  geom_col(aes(x = average_per_1000cap, y = tlaName)) +
+    scale_y_discrete(limits=rev) +
+  ggtitle("Rates of serious or fatal crashes per 1,000 usual residents, by territorial authority")
+
+head(serious_or_fatal_per_cap) %>%
+  kable(
+    caption = "Highest crash rates per 1,000 usual residents",
+    digits = 3
+  )
+tail(serious_or_fatal_per_cap) %>%
+  kable(
+    caption = "Lowest crash rates per 1,000 usual residents",
+    digits = 3
+  )
 ```
+I have included a per 1,000 people of driving age measure for these tables, as these are the people most likely to be behind the wheel of a car.
 
 ## Statistical modelling for significant variables
 
-```{r ridge_lasso, echo = FALSE}
+Using a Lasso regression, we can see which variables have the biggest impact of crash severity. Lasso doesn't necessarily maximise model accuracy, but is great at filtering out which variables don't affect crash severity, so we can then capture the important variables and put into a better model.
+
+```{r lasso_regression, echo = FALSE, message = FALSE, fig.align='center', cache = TRUE}
 mod_vars <- c(
   "bicycle", "bridge", "bus", "carStationWagon", "cliffBank", "crashSHDescription",
   "debris", "directionRoleDescription", "ditch", "fence", "flatHill", "guardRail",
@@ -252,36 +298,122 @@ mod_vars <- c(
   "waterRiver", "weatherA", "weatherB"
 )
 
-character_vars <- crash_csv %>% 
+character_vars <- crash_csv %>%
+  mutate(
+    across(where(is.factor), as.character)
+  ) %>% 
   select(all_of(mod_vars)) %>% 
   select(where(is.character)) %>% 
   names()
 
+#need to convert factors to characters, then characters to dummy variables
 mod_data <- crash_csv %>%
-  select(all_of(mod_vars)) %>%
-  fastDummies::dummy_cols(character_vars, remove_selected_columns = T) %>% 
-  as.matrix()
+  select(all_of(mod_vars)) %>% 
+  fastDummies::dummy_cols(
+    character_vars,
+    remove_selected_columns = T,
+    remove_most_frequent_dummy = T
+  ) %>% 
+  select(!ends_with(c("Null", "None", "Unknown", "_"))) %>% 
+  as("sparseMatrix")
+
+holdout_rows <- sample(1:nrow(crash_csv), size = nrow(crash_csv)/10, replace = FALSE)
+
+train_x <- mod_data[-holdout_rows,]
+train_y <- crash_csv$severeCrash[-holdout_rows]
+
+holdout_x <- mod_data[holdout_rows,]
+holdout_y <- crash_csv$severeCrash[holdout_rows]
 
 crash_mod <- glmnet::cv.glmnet(
-  x = mod_data,
-  y = crash_csv$severeCrash,
+  x = train_x,
+  y = train_y,
+  nlamda = 10,
   family = "binomial",
-  alpha = 1,
-  intercept = FALSE
+  alpha = 1
 )
-
-plot(crash_mod)
 
 coefs <- coef(crash_mod, s = "lambda.1se")
 
-coefs <- data.frame(
+coefs_non_zero <- data.frame(
   var = coefs@Dimnames[[1]][coefs@i + 1],
   coef = coefs@x
 ) %>% 
+  filter(var != "(Intercept)") %>% 
   arrange(desc(coef))
-```
 
-```{r key_vars, echo = FALSE}
-head(coefs, 10) %>% kable()
-tail(coefs, 10) %>% kable()
+coefs_zero <- data.frame(
+  var = coefs@Dimnames[[1]][-(coefs@i + 1)]
+)
+
+positive_covars <-
+  head(coefs_non_zero, 10) %>%
+    kable(
+      caption = "Positive correlation with crash severity",
+      digits = 3
+    ) %>%
+    kableExtra::kable_styling(
+      bootstrap_options = c("hover"),
+      full_width = FALSE,
+      position = "float_left",
+      wraptable_width = "2cm"
+    )
+
+negative_covars <- 
+    tail(coefs_non_zero, 10, keepnums = FALSE)
+
+rownames(negative_covars) <- NULL
+
+negative_covars <- negative_covars %>% 
+    kable(
+      caption = "Negative correlation with crash severity",
+      digits = 3
+    ) %>%
+    kableExtra::kable_styling(
+      bootstrap_options = c("hover"),
+      full_width = FALSE,
+      position = "float_left"
+    )
+
+kables(list(
+  positive_covars,
+  negative_covars
+))
+
+print("Low correlation with crash severity")
+print(paste(coefs_zero$var, collapse = ", "))
+
+pred_y <- predict(crash_mod,newx=holdout_x,type="response")
+
+# You can decide on an optimal threshold to turn your
+# predicted probabilities into classifications e.g.
+threshold <- 0.05
+pred_crash <- ifelse(pred_y > threshold,1,0)
+
+# You can then make a confusion matrix like this:
+confusion_props <- prop.table(table(pred_crash,holdout_y), margin = 2)
 ```
+It appears as though people not inside a vehicle correlate most strongly with high severity crashes. This doesn't confirm they are the recipients of the severe injuries, but it stands to reason. In contrast, crashes involving a train are probably more severe for the person on the other end.
+
+We also see bridges, rivers, and bodies of water as high correlates with severity, which makes a lot of sense. Trees, posts, and poles could be because they're quite sturdy objects, so crashing into them means you come to a more sudden halt than if you crash into a fence, house, or animal.
+
+## Ideas for further exploration
+
+- Link in traffic volumes - NZTA measure this for major roads, Auckland Transport measure for Auckland roads. This can help us identify which roads are disproportionately dangerous
+- Could look at census usual mode of travel to work to estimate cyclist volumes against bicycle related crashes
+- If we find a way to get time-of-day data or estimate it, I'd be interested to explore crash rates for people driving into the sun (East in the morning, West in the evening)
+- Also if time of day has an impact more generally on crash likelihood and severity (after accounting for light conditions)
+- Who is responsible in these crashes? Do cars need to be more mindful of pedestrians and (motor)cyclists, or do pedestrians and cyclists need to be more careful?
+- Why *did* crashes of all severity levels dip from 2010 - 2015?
+
+## Actions
+
+- Consult with subject matter and policy experts
+- Policy, information campaigns to protect pedestrians and cyclists - or to teach pedestrians and cyclists how to stay safe on the road
+- Information campaigns for surviving crashing into bodies of water
+- Transform footpaths to make them safer for pedestrians
+- Airbags for trees? - Maybe not!
+
+## Thank you for your attention
+
+Pātai - any questions?
